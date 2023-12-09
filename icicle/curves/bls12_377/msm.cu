@@ -15,6 +15,11 @@ extern "C" int msm_cuda_bls12_377(
   cudaStream_t stream = 0)
 {
   try {
+    cudaError_t setDeviceErr = cudaSetDevice(device_id);
+    if (setDeviceErr != cudaSuccess) {
+      throw std::runtime_error(cudaGetErrorString(setDeviceErr));
+    }
+
     cudaStreamCreate(&stream);
     large_msm<BLS12_377::scalar_t, BLS12_377::projective_t, BLS12_377::affine_t>(
       scalars, points, count, out, false, false, large_bucket_factor, stream);
