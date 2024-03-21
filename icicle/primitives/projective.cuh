@@ -22,14 +22,14 @@ public:
 
   static HOST_DEVICE_INLINE Projective from_affine(const Affine<FF>& point) { return {point.x, point.y, FF::one()}; }
 
-  static HOST_DEVICE_INLINE Projective to_montgomery(const Projective& point)
+  static HOST_DEVICE_INLINE Projective ToMontgomery(const Projective& point)
   {
-    return {FF::to_montgomery(point.x), FF::to_montgomery(point.y), FF::to_montgomery(point.z)};
+    return {FF::ToMontgomery(point.x), FF::ToMontgomery(point.y), FF::ToMontgomery(point.z)};
   }
 
-  static HOST_DEVICE_INLINE Projective from_montgomery(const Projective& point)
+  static HOST_DEVICE_INLINE Projective FromMontgomery(const Projective& point)
   {
-    return {FF::from_montgomery(point.x), FF::from_montgomery(point.y), FF::from_montgomery(point.z)};
+    return {FF::FromMontgomery(point.x), FF::FromMontgomery(point.y), FF::FromMontgomery(point.z)};
   }
 
   static HOST_DEVICE_INLINE Projective generator() { return {GENERATOR_X, GENERATOR_Y, FF::one()}; }
@@ -143,10 +143,14 @@ public:
     return res;
   }
 
+  friend HOST_DEVICE_INLINE Projective operator*(const Projective& point, SCALAR_FF scalar) { return scalar * point; }
+
   friend HOST_DEVICE_INLINE bool operator==(const Projective& p1, const Projective& p2)
   {
     return (p1.x * p2.z == p2.x * p1.z) && (p1.y * p2.z == p2.y * p1.z);
   }
+
+  friend HOST_DEVICE_INLINE bool operator!=(const Projective& p1, const Projective& p2) { return !(p1 == p2); }
 
   friend HOST_INLINE std::ostream& operator<<(std::ostream& os, const Projective& point)
   {
@@ -172,5 +176,17 @@ public:
   {
     SCALAR_FF rand_scalar = SCALAR_FF::rand_host();
     return rand_scalar * generator();
+  }
+
+  static void RandHostMany(Projective* out, int size)
+  {
+    for (int i = 0; i < size; i++)
+      out[i] = (i % size < 100) ? rand_host() : out[i - 100];
+  }
+
+  static void RandHostManyAffine(Affine<FF>* out, int size)
+  {
+    for (int i = 0; i < size; i++)
+      out[i] = (i % size < 100) ? to_affine(rand_host()) : out[i - 100];
   }
 };
