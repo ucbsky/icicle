@@ -6,13 +6,14 @@ import "C"
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/ingonyama-zk/icicle/wrappers/golang/core"
-	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
 	"unsafe"
+
+	"github.com/ingonyama-zk/icicle/v2/wrappers/golang/core"
+	cr "github.com/ingonyama-zk/icicle/v2/wrappers/golang/cuda_runtime"
 )
 
 const (
-	SCALAR_LIMBS int8 = 12
+	SCALAR_LIMBS int = 12
 )
 
 type ScalarField struct {
@@ -33,6 +34,11 @@ func (f ScalarField) GetLimbs() []uint32 {
 
 func (f ScalarField) AsPointer() *uint32 {
 	return &f.limbs[0]
+}
+
+func (f *ScalarField) FromUint32(v uint32) ScalarField {
+	f.limbs[0] = v
+	return *f
 }
 
 func (f *ScalarField) FromLimbs(limbs []uint32) ScalarField {
@@ -89,26 +95,28 @@ func GenerateScalars(size int) core.HostSlice[ScalarField] {
 
 	cScalars := (*C.scalar_t)(unsafe.Pointer(&scalarSlice[0]))
 	cSize := (C.int)(size)
-	C.bw6_761GenerateScalars(cScalars, cSize)
+	C.bw6_761_generate_scalars(cScalars, cSize)
 
 	return scalarSlice
 }
 
 func convertScalarsMontgomery(scalars *core.DeviceSlice, isInto bool) cr.CudaError {
-	cValues := (*C.scalar_t)(scalars.AsPointer())
+	cValues := (*C.scalar_t)(scalars.AsUnsafePointer())
 	cSize := (C.size_t)(scalars.Len())
 	cIsInto := (C._Bool)(isInto)
 	defaultCtx, _ := cr.GetDefaultDeviceContext()
 	cCtx := (*C.DeviceContext)(unsafe.Pointer(&defaultCtx))
-	__ret := C.bw6_761ScalarConvertMontgomery(cValues, cSize, cIsInto, cCtx)
+	__ret := C.bw6_761_scalar_convert_montgomery(cValues, cSize, cIsInto, cCtx)
 	err := (cr.CudaError)(__ret)
 	return err
 }
 
 func ToMontgomery(scalars *core.DeviceSlice) cr.CudaError {
+	scalars.CheckDevice()
 	return convertScalarsMontgomery(scalars, true)
 }
 
 func FromMontgomery(scalars *core.DeviceSlice) cr.CudaError {
+	scalars.CheckDevice()
 	return convertScalarsMontgomery(scalars, false)
 }

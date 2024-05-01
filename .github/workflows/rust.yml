@@ -4,11 +4,11 @@ on:
   pull_request:
     branches:
       - main
-      - dev
+      - V2
   push:
     branches:
       - main
-      - dev
+      - V2
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,7 +33,7 @@ jobs:
       # before building the project.
       # e.g. icicle-cuda-runtime/src/bindings.rs is generated and icicle-cuda-runtime/src/lib.rs includes that module
       # causing rustfmt to fail.
-      run: if [[ $(find . -name target -prune -o -iname *.rs -print | xargs cargo fmt --check --) ]]; then echo "Please run cargo fmt"; exit 1; fi
+      run: if [[ $(find . -path ./icicle-curves/icicle-curve-template -prune -o -name target -prune -o -iname *.rs -print | xargs cargo fmt --check --) ]]; then echo "Please run cargo fmt"; exit 1; fi
 
   build-linux:
     name: Build on Linux
@@ -60,7 +60,24 @@ jobs:
       if: needs.check-changed-files.outputs.rust == 'true' || needs.check-changed-files.outputs.cpp_cuda == 'true'
       # Running tests from the root workspace will run all workspace members' tests by default
       # We need to limit the number of threads to avoid running out of memory on weaker machines
-      run: cargo test --release --verbose --features=g2 -- --test-threads=2
+      # ignored tests are polynomial tests. Since they conflict with NTT tests, they are executed separately
+      run: |
+        cargo test --workspace --exclude icicle-babybear --exclude icicle-stark252 --release --verbose --features=g2 -- --test-threads=2 --ignored
+        cargo test --workspace --exclude icicle-babybear --exclude icicle-stark252 --release --verbose --features=g2 -- --test-threads=2
+
+    - name: Run baby bear tests
+      working-directory: ./wrappers/rust/icicle-fields/icicle-babybear
+      if: needs.check-changed-files.outputs.rust == 'true' || needs.check-changed-files.outputs.cpp_cuda == 'true'
+      run: |
+        cargo test --release --verbose -- --ignored
+        cargo test --release --verbose
+
+    - name: Run stark252 tests
+      working-directory: ./wrappers/rust/icicle-fields/icicle-stark252
+      if: needs.check-changed-files.outputs.rust == 'true' || needs.check-changed-files.outputs.cpp_cuda == 'true'
+      run: |
+        cargo test --release --verbose -- --ignored
+        cargo test --release --verbose
 
   build-windows:
     name: Build on Windows

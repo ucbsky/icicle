@@ -3,7 +3,7 @@ package core
 import (
 	"unsafe"
 
-	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
+	cr "github.com/ingonyama-zk/icicle/v2/wrappers/golang/cuda_runtime"
 )
 
 type HostOrDeviceSlice interface {
@@ -11,6 +11,7 @@ type HostOrDeviceSlice interface {
 	Cap() int
 	IsEmpty() bool
 	IsOnDevice() bool
+	AsUnsafePointer() unsafe.Pointer
 }
 
 type DevicePointer = unsafe.Pointer
@@ -35,12 +36,84 @@ func (d DeviceSlice) IsEmpty() bool {
 	return d.length == 0
 }
 
-func (d DeviceSlice) AsPointer() unsafe.Pointer {
+func (d DeviceSlice) AsUnsafePointer() unsafe.Pointer {
 	return d.inner
 }
 
 func (d DeviceSlice) IsOnDevice() bool {
 	return true
+}
+
+func (d DeviceSlice) GetDeviceId() int {
+	return cr.GetDeviceFromPointer(d.inner)
+}
+
+// CheckDevice is used to ensure that the DeviceSlice about to be used resides on the currently set device
+func (d DeviceSlice) CheckDevice() {
+	if currentDeviceId, err := cr.GetDevice(); err != cr.CudaSuccess || d.GetDeviceId() != currentDeviceId {
+		panic("Attempt to use DeviceSlice on a different device")
+	}
+}
+
+func (d *DeviceSlice) Range(start, end int, endInclusive bool) DeviceSlice {
+	if end <= start {
+		panic("Cannot have negative or zero size slices")
+	}
+
+	if end >= d.length {
+		panic("Cannot increase slice size from Range")
+	}
+
+	var newSlice DeviceSlice
+	switch {
+	case start < 0:
+		panic("Negative value for start is not supported")
+	case start == 0:
+		newSlice = d.RangeTo(end, endInclusive)
+	case start > 0:
+		tempSlice := d.RangeFrom(start)
+		newSlice = tempSlice.RangeTo(end-start, endInclusive)
+	}
+	return newSlice
+}
+
+func (d *DeviceSlice) RangeTo(end int, inclusive bool) DeviceSlice {
+	if end <= 0 {
+		panic("Cannot have negative or zero size slices")
+	}
+
+	if end >= d.length {
+		panic("Cannot increase slice size from Range")
+	}
+
+	var newSlice DeviceSlice
+	sizeOfElement := d.capacity / d.length
+	newSlice.length = end
+	if inclusive {
+		newSlice.length += 1
+	}
+	newSlice.capacity = newSlice.length * sizeOfElement
+	newSlice.inner = d.inner
+	return newSlice
+}
+
+func (d *DeviceSlice) RangeFrom(start int) DeviceSlice {
+	if start >= d.length {
+		panic("Cannot have negative or zero size slices")
+	}
+
+	if start < 0 {
+		panic("Negative value for start is not supported")
+	}
+
+	var newSlice DeviceSlice
+	sizeOfElement := d.capacity / d.length
+
+	newSlice.inner = unsafe.Pointer(uintptr(d.inner) + uintptr(start)*uintptr(sizeOfElement))
+	newSlice.length = d.length - start
+	newSlice.capacity = d.capacity - start*sizeOfElement
+
+	return newSlice
 }
 
 // TODO: change signature to be Malloc(element, numElements)
@@ -62,6 +135,7 @@ func (d *DeviceSlice) MallocAsync(size, sizeOfElement int, stream cr.CudaStream)
 }
 
 func (d *DeviceSlice) Free() cr.CudaError {
+	d.CheckDevice()
 	err := cr.Free(d.inner)
 	if err == cr.CudaSuccess {
 		d.length, d.capacity = 0, 0
@@ -70,20 +144,23 @@ func (d *DeviceSlice) Free() cr.CudaError {
 	return err
 }
 
-type HostSliceInterface interface {
-	Size() int
+func (d *DeviceSlice) FreeAsync(stream cr.Stream) cr.CudaError {
+	d.CheckDevice()
+	err := cr.FreeAsync(d.inner, stream)
+	if err == cr.CudaSuccess {
+		d.length, d.capacity = 0, 0
+		d.inner = nil
+	}
+	return err
 }
 
-type HostSlice[T HostSliceInterface] []T
+type HostSlice[T any] []T
 
-func HostSliceFromElements[T HostSliceInterface](elements []T) HostSlice[T] {
-	slice := make(HostSlice[T], len(elements))
-	copy(slice, elements)
-
-	return slice
+func HostSliceFromElements[T any](elements []T) HostSlice[T] {
+	return elements
 }
 
-func HostSliceWithValue[T HostSliceInterface](underlyingValue T, size int) HostSlice[T] {
+func HostSliceWithValue[T any](underlyingValue T, size int) HostSlice[T] {
 	slice := make(HostSlice[T], size)
 	for i := range slice {
 		slice[i] = underlyingValue
@@ -109,7 +186,15 @@ func (h HostSlice[T]) IsOnDevice() bool {
 }
 
 func (h HostSlice[T]) SizeOfElement() int {
-	return h[0].Size()
+	return int(unsafe.Sizeof(h[0]))
+}
+
+func (h HostSlice[T]) AsPointer() *T {
+	return &h[0]
+}
+
+func (h HostSlice[T]) AsUnsafePointer() unsafe.Pointer {
+	return unsafe.Pointer(&h[0])
 }
 
 func (h HostSlice[T]) CopyToDevice(dst *DeviceSlice, shouldAllocate bool) *DeviceSlice {
@@ -117,13 +202,12 @@ func (h HostSlice[T]) CopyToDevice(dst *DeviceSlice, shouldAllocate bool) *Devic
 	if shouldAllocate {
 		dst.Malloc(size, h.SizeOfElement())
 	}
+	dst.CheckDevice()
 	if size > dst.Cap() {
 		panic("Number of bytes to copy is too large for destination")
 	}
 
-	// hostSrc := unsafe.Pointer(h.AsPointer())
-	hostSrc := unsafe.Pointer(&h[0])
-	cr.CopyToDevice(dst.inner, hostSrc, uint(size))
+	cr.CopyToDevice(dst.inner, h.AsUnsafePointer(), uint(size))
 	dst.length = h.Len()
 	return dst
 }
@@ -133,28 +217,30 @@ func (h HostSlice[T]) CopyToDeviceAsync(dst *DeviceSlice, stream cr.CudaStream, 
 	if shouldAllocate {
 		dst.MallocAsync(size, h.SizeOfElement(), stream)
 	}
+	dst.CheckDevice()
 	if size > dst.Cap() {
 		panic("Number of bytes to copy is too large for destination")
 	}
 
-	hostSrc := unsafe.Pointer(&h[0])
-	cr.CopyToDeviceAsync(dst.inner, hostSrc, uint(size), stream)
+	cr.CopyToDeviceAsync(dst.inner, h.AsUnsafePointer(), uint(size), stream)
 	dst.length = h.Len()
 	return dst
 }
 
 func (h HostSlice[T]) CopyFromDevice(src *DeviceSlice) {
+	src.CheckDevice()
 	if h.Len() != src.Len() {
 		panic("destination and source slices have different lengths")
 	}
 	bytesSize := src.Len() * h.SizeOfElement()
-	cr.CopyFromDevice(unsafe.Pointer(&h[0]), src.inner, uint(bytesSize))
+	cr.CopyFromDevice(h.AsUnsafePointer(), src.inner, uint(bytesSize))
 }
 
 func (h HostSlice[T]) CopyFromDeviceAsync(src *DeviceSlice, stream cr.Stream) {
+	src.CheckDevice()
 	if h.Len() != src.Len() {
 		panic("destination and source slices have different lengths")
 	}
 	bytesSize := src.Len() * h.SizeOfElement()
-	cr.CopyFromDeviceAsync(unsafe.Pointer(&h[0]), src.inner, uint(bytesSize), stream)
+	cr.CopyFromDeviceAsync(h.AsUnsafePointer(), src.inner, uint(bytesSize), stream)
 }
